@@ -1,1 +1,59 @@
+name: Winter Wind Build
 
+on:
+  workflow_dispatch:
+    inputs:
+      repository: { description: 'Repo', required: true, default: 'AbuRider/android_kernel_xiaomi_earth' }
+      branch: { description: 'Branch', required: true, default: '16.2' }
+      defconfig: { description: 'Defconfig', required: true, default: 'earth_defconfig' }
+      clang : { description: 'Clang URL', required: true, default: 'https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r536225.tar.gz' }
+      kernelsu_branch: { description: 'KSU Branch', required: false, default: 'master' }
+      kernelsu_setup : { description: 'KSU Setup Link', required: false, default: '-' }
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ github.event.inputs.repository }}
+        ref: ${{ github.event.inputs.branch }}
+        submodules: recursive
+
+    - name: Setup and Build
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential libncurses-dev bison flex libssl-dev libelf-dev bc zip gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi python3 python-is-python3 git wget curl
+        
+        export TZ="Asia/Jakarta"
+        echo "BUILD_TIME=$(date +'%H%M-%d%m%y')" >> $GITHUB_ENV
+        
+        # Download AOSP Clang 
+        mkdir clang
+        wget -qO- ${{ github.event.inputs.clang }} | tar -xz -C clang
+        export PATH=$PWD/clang/bin:$PATH
+        
+        curl -LSs "${{ github.event.inputs.kernelsu_setup }}" | bash -s ${{ github.event.inputs.kernelsu_branch }}
+        export ARCH=arm64
+        export KBUILD_BUILD_USER="kumiko"
+        export KBUILD_BUILD_HOST="clarinet_quartet"
+        ARGS="O=out ARCH=arm64 CC=clang LD=ld.lld AR=llvm-ar NM=llvm-nm STRIP=llvm-strip OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1"
+        
+        make $ARGS ${{ github.event.inputs.defconfig }} 2>&1 | tee defconfig.log || true
+        make -j$(nproc) $ARGS 2>&1 | tee compile.log || true
+
+        if [ -f out/arch/arm64/boot/Image.gz-dtb ]; then
+          ZIP_NAME="kernel${{ env.BUILD_TIME }}.zip"
+          zip -j "$ZIP_NAME" out/arch/arm64/boot/Image.gz-dtb 2>/dev/null || zip -j "$ZIP_NAME" out/arch/arm64/boot/Image.gz-dtb
+          echo "FINAL_ZIP=$ZIP_NAME" >> $GITHUB_ENV
+        fi
+
+    - name: Upload Artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: Build-Result-${{ env.BUILD_TIME }}
+        path: |
+          *.log
+          *.zip
+        retention-days: 7
